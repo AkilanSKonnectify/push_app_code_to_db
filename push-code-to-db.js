@@ -124,7 +124,7 @@ const server = http.createServer(async (req, res) => {
 
       if (tags !== undefined) {
         updates.push(`tags = $${idx++}::jsonb`);
-        values.push(JSON.stringify(tags));
+        values.push(JSON.stringify(Array.isArray(tags) ? tags : []));
       }
 
       updates.push(`updated_at = CURRENT_TIMESTAMP`);
@@ -200,7 +200,7 @@ const server = http.createServer(async (req, res) => {
       hasTriggers,
       hasActions,
       gitSha ?? null,
-      tags ? JSON.stringify(tags) : [],
+      Array.isArray(tags) ? JSON.stringify(tags) : JSON.stringify([]),
     ];
 
     const insertResult = await client.query(insertQuery, insertValues);
