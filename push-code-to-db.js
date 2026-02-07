@@ -200,7 +200,7 @@ const server = http.createServer(async (req, res) => {
       hasTriggers,
       hasActions,
       gitSha ?? null,
-      tags ? tags : [],
+      tags ? JSON.stringify(tags) : [],
     ];
 
     const insertResult = await client.query(insertQuery, insertValues);
