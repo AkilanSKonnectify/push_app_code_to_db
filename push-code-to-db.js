@@ -35,17 +35,29 @@ const server = http.createServer(async (req, res) => {
     return res.end("Not found");
   }
 
+  let client;
+
   try {
     const body = await readBody(req);
 
-    const { env, appId, appCode } = body;
+    const {
+      env,
+      appId,
+      appName,
+      appVersion,
+      appCode,
+      hasTriggers,
+      hasActions,
+      gitSha,
+      tags,
+    } = body;
 
-    if (!env || !appId || !appCode) {
+    if (!env || !appId) {
       res.writeHead(400, { "Content-Type": "application/json" });
       return res.end(
         JSON.stringify({
           success: false,
-          error: "Missing required fields: env, appId, appCode",
+          error: "Missing required fields: env, appId",
         }),
       );
     }
@@ -61,43 +73,146 @@ const server = http.createServer(async (req, res) => {
       );
     }
 
-    const client = new Client({ connectionString: databaseUrl });
+    client = new Client({ connectionString: databaseUrl });
     await client.connect();
 
     /**
-     * UPDATE ONLY — app must already exist
+     * 1️⃣ Check if app exists
      */
-    const query = `
-      UPDATE app
-      SET
-        app_code = $1,
-        updated_at = NOW()
-      WHERE app_id = $2
-      RETURNING app_id, updated_at;
-    `;
+    const existsResult = await client.query(
+      `SELECT app_id FROM app WHERE app_id = $1`,
+      [appId],
+    );
 
-    const values = [appCode, appId];
+    /**
+     * 2️⃣ UPDATE if exists
+     */
+    if (existsResult.rowCount > 0) {
+      const updates = [];
+      const values = [];
+      let idx = 1;
 
-    const result = await client.query(query, values);
-    await client.end();
+      if (appName !== undefined) {
+        updates.push(`app_name = $${idx++}`);
+        values.push(appName);
+      }
 
-    if (result.rowCount === 0) {
-      res.writeHead(404, { "Content-Type": "application/json" });
+      if (appVersion !== undefined) {
+        updates.push(`app_version = $${idx++}`);
+        values.push(appVersion);
+      }
+
+      if (appCode !== undefined) {
+        updates.push(`app_code = $${idx++}`);
+        values.push(appCode);
+      }
+
+      if (hasTriggers !== undefined) {
+        updates.push(`has_triggers = $${idx++}`);
+        values.push(hasTriggers);
+      }
+
+      if (hasActions !== undefined) {
+        updates.push(`has_actions = $${idx++}`);
+        values.push(hasActions);
+      }
+
+      if (gitSha !== undefined) {
+        updates.push(`git_sha = $${idx++}`);
+        values.push(gitSha);
+      }
+
+      if (tags !== undefined) {
+        updates.push(`tags = $${idx++}::jsonb`);
+        values.push(JSON.stringify(tags));
+      }
+
+      updates.push(`updated_at = CURRENT_TIMESTAMP`);
+
+      if (updates.length === 1) {
+        throw new Error("No fields provided to update");
+      }
+
+      const updateQuery = `
+        UPDATE app
+        SET ${updates.join(", ")}
+        WHERE app_id = $${idx}
+        RETURNING app_id, updated_at;
+      `;
+
+      values.push(appId);
+
+      const result = await client.query(updateQuery, values);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(
         JSON.stringify({
-          success: false,
-          error: "App not found",
+          success: true,
+          action: "updated",
+          environment: env,
+          appId: result.rows[0].app_id,
+          updatedAt: result.rows[0].updated_at,
         }),
       );
     }
+
+    /**
+     * 3️⃣ INSERT if not exists
+     */
+    if (!appName || !appVersion || !appCode || !hasTriggers || !hasActions) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      return res.end(
+        JSON.stringify({
+          success: false,
+          error:
+            "appName, appVersion and appCode are required when creating a new app",
+        }),
+      );
+    }
+
+    const insertQuery = `
+      INSERT INTO app (
+        app_name,
+        app_id,
+        app_version,
+        app_code,
+        has_triggers,
+        has_actions,
+        git_sha,
+        tags,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1, $2, $3, $4,
+        $5, $6, $7, $8,
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+      )
+      RETURNING app_id, created_at;
+    `;
+
+    const insertValues = [
+      appName,
+      appId,
+      appVersion,
+      appCode,
+      hasTriggers,
+      hasActions,
+      gitSha ?? null,
+      tags ? tags : [],
+    ];
+
+    const insertResult = await client.query(insertQuery, insertValues);
 
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(
       JSON.stringify({
         success: true,
+        action: "created",
         environment: env,
-        appId: result.rows[0].app_id,
-        updatedAt: result.rows[0].updated_at,
+        appId: insertResult.rows[0].app_id,
+        createdAt: insertResult.rows[0].created_at,
       }),
     );
   } catch (error) {
@@ -109,6 +224,10 @@ const server = http.createServer(async (req, res) => {
         error: error.message || "Internal server error",
       }),
     );
+  } finally {
+    if (client) {
+      await client.end();
+    }
   }
 });
 
